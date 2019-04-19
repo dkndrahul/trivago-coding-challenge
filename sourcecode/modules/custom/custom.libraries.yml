@@ -1,0 +1,13 @@
+modlib:
+    version: 1.x
+    js: 
+        js/custommodule.js: {}
+        
+    dependencies:
+        - core/jquery
+        - core/jquery.ui
+        - core/drupalSettings
+        - core/drupal.ajax
+        - core/drupal.dialog
+        - core/drupal.dialog.ajax
+        

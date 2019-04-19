@@ -1,0 +1,23 @@
+custom.home: 
+    path: '/home'
+    defaults:
+        _controller: '\Drupal\custom\Controller\HomeController::homePage'
+        _title: 'Home'
+    requirements: 
+        _access: 'TRUE' 
+        
+custom.import: 
+    path: '/import-wines'
+    defaults:
+        _controller: '\Drupal\custom\Controller\HomeController::importBatch'
+        _title: 'Importing Wines Feed'
+    requirements: 
+        _access: 'TRUE'         
+        
+custom.cronimport: 
+    path: '/import-wines-cron'
+    defaults:
+        _controller: '\Drupal\custom\Controller\HomeController::importBatch'
+        _title: 'Importing Wines Feed'
+    requirements: 
+        _access: 'TRUE'           

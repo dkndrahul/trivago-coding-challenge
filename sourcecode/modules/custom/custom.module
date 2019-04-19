@@ -1,0 +1,205 @@
+<?php
+
+/*
+ * Custom Module
+ * 
+ * Admin credentials: admin | admin@ 
+ * 
+  * Tasks: 
+ * #1 We provide you a RSS feed with a list of wines and the day when they’re available.
+ * You need to import it and store the available on it. There should be a way to update
+ * the available wines every day. 
+ * >>Rss feed are imported into drupal nodes using drupal batch queue. 
+ * In "Wines" page the list of imported rss feed data are shown. 
+ * To manually import rss feed please click "Import rss feed" button.
+ * 
+ * >>@see, \Drupal\custom\Controller\HomeController::importBatch(), 
+ *         \Drupal\custom\Controller\HomeController::importBatchProcess(), 
+ *         \Drupal\custom\Controller\HomeController::importBatchFinished(),
+ *          custom_cron() 
+ * >>@url, "/wines-list" 
+ * 
+ * #2 Create some code, preferrably in PHP, and use a queueing system for establishing
+ * the communication between the waiters and the sommelier. Remember returning a 
+ * response to the customer, either the wine is available or not. 
+ * >>Start Typing in the "Wines" Field, Using ajax autocomplete a list of wines 
+ * will appear. Select a wine. Then using Drupal asynchronous queue the availability 
+ * of wine is checked and a success or error message will appear as response. 
+ * Availability check is based on Order Date = Wine pubDate and Order Wine nid = Wine nid. 
+ *     
+ * >>@see, custom_form_alter(), custom_field_widget_form_alter(), 
+ *         custom_field_wine_nids_available(), custom_field_wine_nids_validate() 
+ * >>@url, node/add/orders?destination=orders 
+ * 
+ * #3 Be creative, add any other requirement that could be interesting for this 
+ * feature.
+ * >>Displaying a list of Wines, filter wines, sort wines, Import Feed, Edit, Delete Wine. 
+ *   @url,  "/wines-list" page [Menu = "Wines"]
+ * >>Displaying a list of orders, filter orders, Add, Edit, Delete Order. 
+ *   @url, "/orders" page [Menu = "Orders"]
+ * >>Display order details in modal dialog using ajax.  
+ *   @url, "/orders" page [Menu = "Orders"]
+ * 
+ */
+use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\Ajax\AjaxResponse;
+use Drupal\Core\Ajax\ReplaceCommand;
+use Drupal\Core\Ajax\InvokeCommand;
+
+/**
+ * hook_user_login
+ * Redirect user to home page after login
+ * @param UserInterface $account
+ * @return redirect response
+ */
+function custom_user_login(\Drupal\user\UserInterface $account) {
+  $redirect = new \Symfony\Component\HttpFoundation\RedirectResponse(\Drupal\Core\Url::fromRoute('custom.home', [], ['absolute' => TRUE])->toString());
+  $redirect->send();
+}
+
+/**
+ * hook_cron
+ * Automate the rss feed import 
+ * using cron
+ */
+function custom_cron() {
+  $context = ['trigger_by_cron' => TRUE];
+  \Drupal\custom\Controller\HomeController::importBatchProcess($context);
+  $message = \Drupal::translation()
+      ->formatPlural(count($context['results']), 'One wine processed.', '@count wines saved successfully.');
+  \Drupal::logger('custom_cron')->info($message);
+}
+
+/**
+ * hook_form_alter
+ * Order Forms to communicate customer->waiters->sommelier.
+ * @param string $form
+ * @param FormStateInterface $form_state
+ * @param type $form_id
+ */
+function custom_form_alter(&$form, FormStateInterface $form_state, $form_id) {
+  if (in_array($form_id, ['node_orders_edit_form','node_orders_form'])) {
+    $form['#validate'][] = 'custom_field_wine_nids_validate';
+    
+    $form['meta']['#access'] = FALSE;
+    $form['revision_log']['#access'] = FALSE;
+  }
+}
+
+/**
+ * hook_field_widget_form_alter
+ * Custom ajax queuing for wines available
+ * @param array $element
+ * @param FormStateInterface $form_state
+ * @param type $context
+ * @return type
+ */
+function custom_field_widget_form_alter(&$element, FormStateInterface $form_state, $context) {
+  if (!in_array($context['items']->getFieldDefinition()->getName(), ['field_wine_nids'])) {
+    return;
+  }
+  $element['target_id']['#suffix'] = '<span id="field_wine_nids_available"></span>';
+  $element['target_id']['#ajax'] = [
+    'callback' => 'custom_field_wine_nids_available',
+    'wrapper' => 'field_wine_nids_available',
+    'event' => 'autocompleteclose',
+    'progress' => [
+      'type' => 'throbber',
+      'message' => t('Connecting "Sommelier" to check wine is available or not.')
+    ]
+  ];
+}
+
+/**
+ * Check wines available
+ * @param type $form
+ * @param FormStateInterface $form_state
+ * @return AjaxResponse
+ */
+function custom_field_wine_nids_available($form, FormStateInterface $form_state) {
+  $pubdt = $form_state->getValue(['field_order_date', 0, 'value', 'date']); //Y-m-d format
+  if (empty($pubdt)) {
+    \Drupal::messenger()->addError(t('Please provide a valid order date.'));
+  }
+  
+  //get the waiter
+  $waiter = $form_state->getValue(['field_waiter',0,'value']);
+
+  $winenid = $form_state->getValue($form_state->getTriggeringElement()['#parents']);
+  //check with sommelier for availability 
+  $rs = \Drupal::entityQuery('node')
+      ->condition('type', 'wines')
+      ->condition('status', 1)
+      ->condition('nid', $winenid)
+      ->condition('field_pubdate', $pubdt)
+      ->execute()
+  ;
+
+  $removeErrorCss = NULL; 
+  if (empty($rs)) {
+    $removeErrorCss = FALSE; 
+    $lbl = \Drupal\node\Entity\Node::load($winenid)->label();
+    \Drupal::messenger()->addError(t('"Sommelier" to "@waiter" : this wine is <strong>not available</strong>.',['@waiter'=>$waiter]));
+  }
+  else {
+    $removeErrorCss = TRUE; 
+    $lbl = \Drupal\node\Entity\Node::load($winenid)->label();
+    \Drupal::messenger()->addStatus(t('"Sommelier" to "@waiter" : this wine is <strong>available</strong>.',['@waiter'=>$waiter]));
+  }
+
+  $field_id = $form_state->getTriggeringElement()['#attributes']['data-drupal-selector'];
+  $field_css = str_replace('edit', 'form-item', $field_id);
+  $elements = Drupal\Core\Render\Element\StatusMessages::renderMessages();
+  $html = '<span id="field_wine_nids_available">'
+      . '' . \Drupal::service('renderer')->render($elements, FALSE)
+      . '</span>';
+  $response = new AjaxResponse();
+  $response->addCommand(new ReplaceCommand('div.' . $field_css . ' + #field_wine_nids_available', $html));
+  
+  //remove error css from autocomplete field.
+  if($removeErrorCss){
+    $response->addCommand(new InvokeCommand('div.' . $field_css . ' #'.$field_id,'removeClass',['error']));
+  } elseif($removeErrorCss === FALSE) {
+    $response->addCommand(new InvokeCommand('div.' . $field_css . ' #'.$field_id,'addClass',['error']));
+  }
+  
+  return $response;
+}
+
+/**
+ * Validate Wine field in orders. 
+ * Check in a queue that wine is available or not, 
+ * before saving into database.
+ * 
+ * @param type $element
+ * @param FormStateInterface $form_state
+ * @param type $form
+ */
+function custom_field_wine_nids_validate($form, FormStateInterface $form_state) {
+
+  $pubdt = $form_state->getValue(['field_order_date', 0, 'value']); //DrupalDateTime
+  if (empty($pubdt)) {
+    $form_state->setErrorByName('field_order_date', 'Please provide a valid order date.');
+  }
+
+  $field_wine_nids = $form_state->getValue('field_wine_nids');
+  if (!empty($field_wine_nids)) {
+    foreach ($field_wine_nids as $delta => $v) {
+      if (array_key_exists('target_id', $v) && $v['target_id']) {
+        $winenid = $v['target_id'];
+        //check with sommelier for availability
+        $rs = \Drupal::entityQuery('node')
+            ->condition('type', 'wines')
+            ->condition('status', 1)
+            ->condition('nid', $winenid)
+            ->condition('field_pubdate', $pubdt->format('Y-m-d'))
+            ->execute()
+        ;
+        if (empty($rs)) {
+          $lbl = \Drupal\node\Entity\Node::load($winenid)->label();
+          $form_state->setErrorByName('field_wine_nids]['.$delta.'][target_id', t('Order can\'t be processed.<br><small>@lbl</small> is not available.', ['@lbl' => $lbl]));
+        }
+      }
+    }
+  }
+}
